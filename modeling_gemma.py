@@ -103,6 +103,45 @@ class PaliGemmaForConditionalGeneration(nn.Module):
         image_mask = input_ids == self.config.image_token_index
         pad_mask = input_ids == self.pad_token_id
 
+        text_mask_expanded = text_mask.unsqueeze(-1).expand(-1, -1, embed_dim)
+        image_mask_expanded = image_mask.unsqueeze(-1).expand(-1, -1, embed_dim)
+        pad_mask_expanded = pad_mask.unsqueeze(-1).expand(-1, -1, embed_dim)
+
+        final_embedding = torch.where(text_mask_expanded, input_embeds, final_embedding)
+        final_embedding = final_embedding.masked_scatter(image_mask_expanded, scaled_image_features)
+        final_embedding = torch.where(pad_mask_expanded,torch.zeros_like(final_embedding), final_embedding)
+
+        ### CREATE THE ATTENTION MASK ####
+
+        dtype, device = input_embeds.dtype, input_embeds.device
+        min_dtype = torch.finfo(dtype).min
+        q_len = inputs_embeds.shape[1]
+
+        if kv_cache is None or kv_cache.num_items() == 0:
+            # Do not mask any token, because we're in the prefill phase
+            # This only works when we have no padding
+            causal_mask = torch.full(
+                (batch_size, q_len, q_len), fill_value=0, dtype=dtype, device=device
+            )
+        else:
+            # Since we are generating tokens, the query must be one single token
+            assert q_len == 1
+            kv_len = kv_cache.num_items() + q_len
+            # Also in this case we don't need to mask anything since each query should be able to attent all previous tokens
+            # This only works when we have no padding
+            causal_mask = torch.full(
+                (batch_size, q_len, kv_len), fill_value=0, dtype=dtype, device=device
+            )
+
+        # Add the head dimension
+        # [Batch_Size, Q_Len]
+
+        attention_mask = torch.ones(batch_size, sequence_length, dtype=dtype, device=device)
+        attention_mask = attention_mask.masked_fill(pad_mask, 0.0)
+        attention_mask = attention_mask.masked_fill(text_mask, 1.0)
+
+        position_ids = torch.arange(sequence_length, dtype=torch.long, device=device)
+
     def forward(
         self,
         input_ids: torch.LongTensor = None,
